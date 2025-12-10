@@ -41,7 +41,7 @@ const median = (arr) => { const a = arr.filter(x => isFinite(x)).slice().sort((x
 const computeSMA = (data, period) => { const res = []; if (!data || !data.length) return res; const window = []; let sum = 0; for (let i = 0; i < data.length; i++) { const v = data[i].close; window.push(v); sum += v; if (window.length > period) sum -= window.shift(); if (window.length === period) res.push({ time: data[i].time, value: sum / period }); } return res; };
 
 /* CSV uploader with auto-detect */
-function CSVUploader({ onParsed }) {
+function CSVUploader({ onParsed, onFileNameChange }) {
   const fileRef = useRef(null);
   const [rawRows, setRawRows] = useState([]);
   const [headers, setHeaders] = useState([]);
@@ -50,6 +50,7 @@ function CSVUploader({ onParsed }) {
   const [assumeDateMs, setAssumeDateMs] = useState(false);
 
   const handleFile = (file) => {
+    if (file && onFileNameChange) onFileNameChange(file.name);
     Papa.parse(file, {
       header: true, skipEmptyLines: true, transformHeader: h => h.trim(), complete: (results) => {
         const rows = results.data || [];
@@ -80,14 +81,11 @@ function CSVUploader({ onParsed }) {
   };
 
   return (
-    <div style={{ padding: 10, borderRight: '1px solid #eee', minWidth: 360 }}>
+    <div className="upload-section">
       <input ref={fileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={e => handleFile(e.target.files[0])} />
-      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-        <button onClick={() => fileRef.current.click()}>Upload CSV</button>
-        <button onClick={() => { setRawRows([]); setHeaders([]); setPreviewRows([]); onParsed([]); }}>Clear</button>
-      </div>
-
-
+      <button className="btn btn-primary" onClick={() => fileRef.current.click()}>Upload CSV</button>
+      <button className="btn" onClick={() => { setRawRows([]); setHeaders([]); setPreviewRows([]); onParsed([]); if (onFileNameChange) onFileNameChange(''); }}>Clear</button>
+      {/* Filename display inside Uploader */}
     </div>
   );
 }
@@ -106,8 +104,19 @@ function TradingChart({ ohlc, theme = 'dark', indicators = { sma: 20 }, onLegend
       layout: { background: { type: ColorType.Solid, color: theme === 'dark' ? '#0b1226' : '#fff' }, textColor: theme === 'dark' ? '#d1d4dc' : '#1b1b1b' },
       width: container.clientWidth,
       height: container.clientHeight,
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+      kineticScroll: { touch: true, mouse: true },
       rightPriceScale: { borderColor: theme === 'dark' ? '#2b2b43' : '#e6e6e6' },
       timeScale: {
+        rightOffset: 12,
+        barSpacing: 6,
+        fixLeftEdge: true,
+        lockVisibleTimeRangeOnResize: true,
+        rightBarStaysOnScroll: true,
+        borderVisible: false,
+        borderColor: theme === 'dark' ? '#2b2b43' : '#e6e6e6',
+        visible: true,
         timeVisible: true,
         secondsVisible: false,
         tickMarkFormatter: (time, tickMarkType, locale) => {
@@ -162,7 +171,7 @@ function TradingChart({ ohlc, theme = 'dark', indicators = { sma: 20 }, onLegend
           high: c.high,
           low: c.low,
           close: c.close,
-          sma: s
+          sma: s ? s.value : undefined // FIX: Access .value property
         });
       } else {
         onLegendChange(null);
@@ -174,12 +183,32 @@ function TradingChart({ ohlc, theme = 'dark', indicators = { sma: 20 }, onLegend
 
 
 
+  // 1. Update Candle Data & Reset View (only when file changes)
   useEffect(() => {
-    const chart = chartRef.current; if (!chart) return; const candleSeries = candleRef.current; const smaSeries = smaRef.current; if (!candleSeries) return;
-    const lcData = (ohlc || []).map(r => ({ time: r.time, open: r.open, high: r.high, low: r.low, close: r.close })); candleSeries.setData(lcData);
-    if (indicators && indicators.sma) { const sma = computeSMA(ohlc, indicators.sma); smaSeries.setData(sma); } else { smaSeries.setData([]); }
-    try { chart.timeScale().fitContent(); } catch (e) { }
-  }, [ohlc, indicators]);
+    const chart = chartRef.current;
+    const candleSeries = candleRef.current;
+    if (!chart || !candleSeries) return;
+
+    const lcData = (ohlc || []).map(r => ({ time: r.time, open: r.open, high: r.high, low: r.low, close: r.close }));
+    candleSeries.setData(lcData);
+
+    if (lcData.length > 0) {
+      try { chart.timeScale().fitContent(); } catch (e) { }
+    }
+  }, [ohlc]);
+
+  // 2. Update SMA (when data or period changes) - NO fitContent here
+  useEffect(() => {
+    const smaSeries = smaRef.current;
+    if (!smaSeries) return;
+
+    if (indicators && indicators.sma) {
+      const smaData = computeSMA(ohlc, indicators.sma);
+      smaSeries.setData(smaData);
+    } else {
+      smaSeries.setData([]);
+    }
+  }, [ohlc, indicators?.sma]);
 
   return <div style={{ position: 'relative', width: '100%' }}><div ref={containerRef} style={{ width: '100%' }} /></div>;
 }
@@ -189,38 +218,46 @@ export default function App() {
   const [theme, setTheme] = useState('dark');
   const [sma, setSma] = useState(20);
   const [legendData, setLegendData] = useState(null);
+  const [fileName, setFileName] = useState('');
 
   const formatVal = (n) => n ? Number(n).toFixed(2) : '—';
 
   return (
     <div style={{ display: 'flex', height: '100vh', flexDirection: 'column' }}>
-      <div style={{ display: 'flex', borderBottom: '1px solid #eee' }}>
-        <div style={{ flex: '0 0 380px' }}><CSVUploader onParsed={(d) => setData(d)} /></div>
-        <div style={{ flex: 1, padding: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-            <div style={{ fontWeight: 'bold' }}>TradingView-like Chart</div>
-            <label style={{ marginRight: 12 }}>SMA <input type="number" value={sma} onChange={e => setSma(Math.max(1, Number(e.target.value) || 1))} style={{ width: 60, marginLeft: 6 }} /></label>
+      <div className="header-toolbar">
+        <div className="header-group">
+          <div className="header-title">TradingView Chart</div>
+          <CSVUploader onParsed={(d) => setData(d)} onFileNameChange={setFileName} />
+          {fileName && <div className="file-name-display">{fileName}</div>}
+        </div>
 
-            {legendData && (
-              <div style={{ display: 'flex', gap: 12, fontSize: 13, fontFamily: 'monospace' }}>
-                <div style={{ fontWeight: 'bold' }}>
-                  {new Date(legendData.time * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}
+        <div className="header-group" style={{ flex: 1, justifyContent: 'center' }}>
+          {legendData ? (
+            <div className="legend-container">
+              <div>{new Date(legendData.time * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' })}</div>
+              <div className="legend-item"><span className="legend-label">O</span> {formatVal(legendData.open)}</div>
+              <div className="legend-item"><span className="legend-label">H</span> {formatVal(legendData.high)}</div>
+              <div className="legend-item"><span className="legend-label">L</span> {formatVal(legendData.low)}</div>
+              <div className="legend-item"><span className="legend-label">C</span> {formatVal(legendData.close)}</div>
+              {legendData.sma !== undefined && !isNaN(legendData.sma) && (
+                <div className="legend-item" style={{ color: '#f1c40f' }}>
+                  <span className="legend-label">SMA</span> {formatVal(legendData.sma)}
                 </div>
-                <div style={{ color: legendData.close >= legendData.open ? '#26a69a' : '#ef5350' }}>
-                  <span style={{ color: theme === 'dark' ? '#787b86' : '#5d606b' }}>O</span> {formatVal(legendData.open)}&nbsp;
-                  <span style={{ color: theme === 'dark' ? '#787b86' : '#5d606b' }}>H</span> {formatVal(legendData.high)}&nbsp;
-                  <span style={{ color: theme === 'dark' ? '#787b86' : '#5d606b' }}>L</span> {formatVal(legendData.low)}&nbsp;
-                  <span style={{ color: theme === 'dark' ? '#787b86' : '#5d606b' }}>C</span> {formatVal(legendData.close)}
-                </div>
-                {legendData.sma !== undefined && (
-                  <div style={{ color: '#f1c40f' }}>
-                    <span style={{ color: theme === 'dark' ? '#787b86' : '#5d606b' }}>SMA</span> {formatVal(legendData.sma)}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}><label>Theme<select value={theme} onChange={e => setTheme(e.target.value)} style={{ marginLeft: 6 }}><option value="dark">Dark</option><option value="light">Light</option></select></label></div>
+              )}
+            </div>
+          ) : (
+            <div className="legend-container" style={{ opacity: 0.5 }}>OHLC Data</div>
+          )}
+        </div>
+
+        <div className="header-group">
+          <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+            SMA <input type="number" className="input-control" value={sma} onChange={e => setSma(Math.max(1, Number(e.target.value) || 1))} style={{ width: 40 }} />
+          </label>
+          <select className="input-control" value={theme} onChange={e => setTheme(e.target.value)}>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
         </div>
       </div>
       <div style={{ flex: 1 }}><TradingChart ohlc={data} theme={theme} indicators={{ sma }} onLegendChange={setLegendData} /></div>
